@@ -45,9 +45,7 @@ env:
 jobs:
   bazel-monitor:
     name: Bazel monitor on Incredibuild
-    runs-on:
-      - self-hosted
-      - Incredibuild
+    runs-on: incredibuild-runner
 
     steps:
       - name: Initialize environment
