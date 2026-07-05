@@ -36,11 +36,11 @@ env:
   BAZEL_MONITOR_S3_BUCKET: ${{ vars.BAZEL_MONITOR_S3_BUCKET }}
   BAZEL_MONITOR_S3_PATH: ${{ vars.BAZEL_MONITOR_S3_PATH }}
   BAZEL_MONITOR_S3_PREFIX: ${{ vars.BAZEL_MONITOR_S3_PREFIX || 'bazel-build-monitor' }}
-  BAZEL_MONITOR_TENANT_ID: ${{ vars.BAZEL_MONITOR_TENANT_ID || 'pending-tenant' }}
+  BAZEL_MONITOR_TENANT_ID: ${{ vars.BAZEL_MONITOR_TENANT_ID || 'tenant_8fd07aic4rop2' }}
   BAZEL_MONITOR_UPLOAD_ENDPOINT: ${{ vars.BAZEL_MONITOR_UPLOAD_ENDPOINT || 's3' }}
   BAZEL_TARGET: ${{ inputs.bazel_target || '//packages/core:core' }}
-  ICA_BASE_URL: https://app.preprod.us-east-1.incredibuild.com
-  ICA_HOSTED_GRID_ID: 09fef598-2558-44b9-a424-6511f4de4755
+  ICA_BASE_URL: https://app.incredibuild.com
+  ICA_HOSTED_GRID_ID: f5a0c627-af37-4126-9f73-977428e36bd8
 
 jobs:
   bazel-monitor:
@@ -173,13 +173,13 @@ jobs:
 
           echo "s3_uri=${S3_URI}" >> "${GITHUB_OUTPUT}"
 
-      - name: Summarize ICA preprod dataset
+      - name: Summarize ICA prod dataset
         if: always()
         run: |
           {
             echo "## Incredibuild Bazel Monitor"
             echo
-            echo "- ICA preprod: ${ICA_BASE_URL}/hosted-grids/${ICA_HOSTED_GRID_ID}/settings"
+            echo "- ICA prod: ${ICA_BASE_URL}/hosted-grids/${ICA_HOSTED_GRID_ID}/settings"
             echo "- Bazel target: \`${BAZEL_TARGET}\`"
             echo "- Upload endpoint: \`${BAZEL_MONITOR_UPLOAD_ENDPOINT}\`"
             echo "- Bazel exit code: \`${{ steps.bazel.outputs.exit_code || 'not-run' }}\`"
