@@ -46,8 +46,8 @@ jobs:
   bazel-monitor:
     name: Bazel monitor on Incredibuild
     runs-on:
-      group: Incredibuild
-      labels: ubuntu-latest
+      - self-hosted
+      - Incredibuild
 
     steps:
       - name: Initialize environment
