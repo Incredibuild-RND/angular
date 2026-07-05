@@ -11,6 +11,10 @@ on:
         description: 'Bazel target to build and capture.'
         required: true
         default: '//packages/core:core'
+      bazel_jobs:
+        description: 'Maximum concurrent Bazel jobs. Lower this for full //... builds on 16 GB runners.'
+        required: true
+        default: '4'
       upload_to_s3:
         description: 'Upload the parsed Bazel Build Monitor dataset to S3.'
         required: true
@@ -37,6 +41,7 @@ env:
   BAZEL_MONITOR_TENANT_ID: ${{ vars.BAZEL_MONITOR_TENANT_ID || 'tenant_8fd07aic4rop2' }}
   BAZEL_MONITOR_UPLOAD_ENDPOINT: ${{ vars.BAZEL_MONITOR_UPLOAD_ENDPOINT || 's3' }}
   BAZEL_TARGET: ${{ inputs.bazel_target || '//packages/core:core' }}
+  BAZEL_JOBS: ${{ inputs.bazel_jobs || '4' }}
   ICA_BASE_URL: https://app.incredibuild.com
   ICA_HOSTED_GRID_ID: f5a0c627-af37-4126-9f73-977428e36bd8
 
@@ -85,6 +90,7 @@ jobs:
             --verbose_failures \
             --subcommands=pretty_print \
             --build_event_publish_all_actions \
+            --jobs="${BAZEL_JOBS}" \
             --build_metadata=COMMIT_SHA="${GITHUB_SHA}" \
             --build_metadata=BRANCH_NAME="${GITHUB_REF_NAME}" \
             --build_metadata=REPO_URL="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}" \
@@ -172,6 +178,7 @@ jobs:
             echo
             echo "- ICA prod: ${ICA_BASE_URL}/hosted-grids/${ICA_HOSTED_GRID_ID}/settings"
             echo "- Bazel target: \`${BAZEL_TARGET}\`"
+            echo "- Bazel jobs: \`${BAZEL_JOBS}\`"
             echo "- Upload endpoint: \`${BAZEL_MONITOR_UPLOAD_ENDPOINT}\`"
             echo "- Bazel exit code: \`${{ steps.bazel.outputs.exit_code || 'not-run' }}\`"
             echo "- Dataset: \`${{ steps.parse.outputs.dataset || 'not-created' }}\`"
