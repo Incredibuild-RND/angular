@@ -1,0 +1,199 @@
+name: Incredibuild Bazel Monitor
+
+on:
+  push:
+    branches:
+      - main
+      - 'incredibuild/**'
+  workflow_dispatch:
+    inputs:
+      bazel_target:
+        description: 'Bazel target to build and capture.'
+        required: true
+        default: '//packages/core:core'
+      upload_to_s3:
+        description: 'Upload the parsed Bazel Build Monitor dataset to S3.'
+        required: true
+        type: boolean
+        default: true
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  id-token: write
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  AWS_REGION: ${{ vars.AWS_REGION || 'us-east-1' }}
+  BAZEL_MONITOR_REPOSITORY: Incredibuild-RND/bazel-build-monitor
+  BAZEL_MONITOR_REF: main
+  BAZEL_MONITOR_S3_BUCKET: ${{ vars.BAZEL_MONITOR_S3_BUCKET }}
+  BAZEL_MONITOR_S3_PATH: ${{ vars.BAZEL_MONITOR_S3_PATH }}
+  BAZEL_MONITOR_S3_PREFIX: ${{ vars.BAZEL_MONITOR_S3_PREFIX || 'bazel-build-monitor' }}
+  BAZEL_MONITOR_TENANT_ID: ${{ vars.BAZEL_MONITOR_TENANT_ID || 'pending-tenant' }}
+  BAZEL_MONITOR_UPLOAD_ENDPOINT: ${{ vars.BAZEL_MONITOR_UPLOAD_ENDPOINT || 's3' }}
+  BAZEL_TARGET: ${{ inputs.bazel_target || '//packages/core:core' }}
+  ICA_BASE_URL: https://app.preprod.us-east-1.incredibuild.com
+  ICA_HOSTED_GRID_ID: 09fef598-2558-44b9-a424-6511f4de4755
+
+jobs:
+  bazel-monitor:
+    name: Bazel monitor on Incredibuild
+    runs-on:
+      group: Incredibuild
+      labels: ubuntu-latest
+
+    steps:
+      - name: Initialize environment
+        uses: angular/dev-infra/github-actions/npm/checkout-and-setup-node@442c2fcbf06a321b5196b4c5fc70e78a49242958
+
+      - name: Setup Bazel
+        uses: angular/dev-infra/github-actions/bazel/setup@442c2fcbf06a321b5196b4c5fc70e78a49242958
+
+      - name: Install node modules
+        run: pnpm install --frozen-lockfile
+
+      - name: Checkout Bazel Build Monitor parser
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          repository: ${{ env.BAZEL_MONITOR_REPOSITORY }}
+          ref: ${{ env.BAZEL_MONITOR_REF }}
+          path: .bazel-build-monitor
+
+      - name: Run Bazel with monitor capture
+        id: bazel
+        run: |
+          set +e
+
+          CAPTURE_DIR="${RUNNER_TEMP}/bazel-monitor/${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          mkdir -p "${CAPTURE_DIR}"
+
+          BEP="${CAPTURE_DIR}/bep.ndjson"
+          PROFILE="${CAPTURE_DIR}/profile.json.gz"
+          EXECLOG="${CAPTURE_DIR}/exec.json"
+          OUT_JSON="${CAPTURE_DIR}/dataset.json"
+
+          {
+            echo "capture_dir=${CAPTURE_DIR}"
+            echo "bep=${BEP}"
+            echo "profile=${PROFILE}"
+            echo "exec_log=${EXECLOG}"
+            echo "dataset=${OUT_JSON}"
+          } >> "${GITHUB_OUTPUT}"
+
+          pnpm bazel build \
+            --build_event_json_file="${BEP}" \
+            --profile="${PROFILE}" \
+            --noslim_profile \
+            --execution_log_json_file="${EXECLOG}" \
+            --announce_rc \
+            --verbose_failures \
+            --subcommands=pretty_print \
+            --build_event_publish_all_actions \
+            --build_metadata=COMMIT_SHA="${GITHUB_SHA}" \
+            --build_metadata=BRANCH_NAME="${GITHUB_REF_NAME}" \
+            --build_metadata=REPO_URL="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}" \
+            --build_metadata=ROLE="incredibuild-ci" \
+            --build_metadata=ICA_HOSTED_GRID_ID="${ICA_HOSTED_GRID_ID}" \
+            --build_metadata=ICA_BASE_URL="${ICA_BASE_URL}" \
+            --build_metadata=UPLOAD_ENDPOINT="${BAZEL_MONITOR_UPLOAD_ENDPOINT}" \
+            --build_metadata=TENANT_ID="${BAZEL_MONITOR_TENANT_ID}" \
+            "${BAZEL_TARGET}"
+          BAZEL_EXIT_CODE=$?
+
+          echo "exit_code=${BAZEL_EXIT_CODE}" >> "${GITHUB_OUTPUT}"
+          exit 0
+
+      - name: Parse Bazel monitor dataset
+        id: parse
+        if: always()
+        run: |
+          BEP="${{ steps.bazel.outputs.bep }}"
+          PROFILE="${{ steps.bazel.outputs.profile }}"
+          EXECLOG="${{ steps.bazel.outputs.exec_log }}"
+          OUT_JSON="${{ steps.bazel.outputs.dataset }}"
+
+          if [[ ! -s "${BEP}" ]]; then
+            echo "No BEP was produced at ${BEP}; cannot create a Bazel monitor dataset." >&2
+            exit 1
+          fi
+
+          PROFILE_ARG=""
+          [[ -s "${PROFILE}" ]] && PROFILE_ARG="${PROFILE}"
+
+          EXECLOG_ARG=""
+          [[ -s "${EXECLOG}" ]] && EXECLOG_ARG="${EXECLOG}"
+
+          node .bazel-build-monitor/src/parse_bazel.js "${BEP}" "${PROFILE_ARG}" "${OUT_JSON}" "${EXECLOG_ARG}"
+
+          echo "dataset=${OUT_JSON}" >> "${GITHUB_OUTPUT}"
+
+      - name: Upload Bazel monitor dataset to GitHub
+        if: ${{ always() && steps.parse.outputs.dataset != '' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: bazel-monitor-s3-dataset-${{ github.run_id }}
+          path: ${{ steps.parse.outputs.dataset }}
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Configure AWS credentials
+        if: ${{ always() && env.BAZEL_MONITOR_UPLOAD_ENDPOINT == 's3' && vars.BAZEL_MONITOR_S3_BUCKET != '' && (github.event_name != 'workflow_dispatch' || inputs.upload_to_s3) }}
+        uses: aws-actions/configure-aws-credentials@7474bc4690e29a8392af63c5b98e7449536d5c3a # v4
+        with:
+          role-to-assume: ${{ secrets.BAZEL_MONITOR_AWS_ROLE_TO_ASSUME }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Upload Bazel monitor dataset to endpoint s3
+        id: s3
+        if: ${{ always() && env.BAZEL_MONITOR_UPLOAD_ENDPOINT == 's3' && vars.BAZEL_MONITOR_S3_BUCKET != '' && (github.event_name != 'workflow_dispatch' || inputs.upload_to_s3) }}
+        run: |
+          OUT_JSON="${{ steps.parse.outputs.dataset }}"
+
+          if [[ ! -s "${OUT_JSON}" ]]; then
+            echo "No parsed dataset was produced at ${OUT_JSON}; cannot upload to S3." >&2
+            exit 1
+          fi
+
+          SAFE_REF="$(printf '%s' "${GITHUB_REF_NAME}" | tr '/:' '--')"
+          if [[ -n "${BAZEL_MONITOR_S3_PATH}" ]]; then
+            S3_KEY="${BAZEL_MONITOR_S3_PATH%/}/${SAFE_REF}/${GITHUB_SHA}/${GITHUB_RUN_ID}/dataset.json"
+          else
+            S3_KEY="${BAZEL_MONITOR_S3_PREFIX%/}/${BAZEL_MONITOR_TENANT_ID}/Incredibuild-RND/angular/${SAFE_REF}/${GITHUB_SHA}/${GITHUB_RUN_ID}/dataset.json"
+          fi
+          S3_URI="s3://${BAZEL_MONITOR_S3_BUCKET}/${S3_KEY}"
+
+          aws s3 cp "${OUT_JSON}" "${S3_URI}" \
+            --content-type application/json \
+            --metadata "repo=${GITHUB_REPOSITORY},branch=${GITHUB_REF_NAME},commit=${GITHUB_SHA},run-id=${GITHUB_RUN_ID},bazel-target=${BAZEL_TARGET},ica-grid-id=${ICA_HOSTED_GRID_ID}"
+
+          echo "s3_uri=${S3_URI}" >> "${GITHUB_OUTPUT}"
+
+      - name: Summarize ICA preprod dataset
+        if: always()
+        run: |
+          {
+            echo "## Incredibuild Bazel Monitor"
+            echo
+            echo "- ICA preprod: ${ICA_BASE_URL}/hosted-grids/${ICA_HOSTED_GRID_ID}/settings"
+            echo "- Bazel target: \`${BAZEL_TARGET}\`"
+            echo "- Upload endpoint: \`${BAZEL_MONITOR_UPLOAD_ENDPOINT}\`"
+            echo "- Bazel exit code: \`${{ steps.bazel.outputs.exit_code || 'not-run' }}\`"
+            echo "- Dataset: \`${{ steps.parse.outputs.dataset || 'not-created' }}\`"
+            echo "- S3 URI: \`${{ steps.s3.outputs.s3_uri || 'not-uploaded' }}\`"
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+      - name: Preserve Bazel exit code
+        if: always()
+        run: |
+          EXIT_CODE="${{ steps.bazel.outputs.exit_code || 1 }}"
+          if [[ ! "${EXIT_CODE}" =~ ^[0-9]+$ ]] || (( EXIT_CODE > 255 )); then
+            EXIT_CODE=1
+          fi
+          exit "${EXIT_CODE}"
